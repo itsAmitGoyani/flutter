@@ -2161,9 +2161,22 @@ class RenderEditable extends RenderBox
     required SelectionChangedCause cause,
   }) {
     _computeTextMetricsIfNeeded();
-    final TextPosition fromPosition = _textPainter.getPositionForOffset(
+    TextPosition fromPosition = _textPainter.getPositionForOffset(
       globalToLocal(from) - _paintOffset,
     );
+    // On iOS, selecting the word at a single point (a double tap; `to` is only
+    // provided when extending the selection by dragging) just past the last
+    // word selects that word, matching the native behavior. Resolving the word
+    // at the last character also keeps [getWordAtOffset]'s trailing-whitespace
+    // behavior (selecting the previous word) native. Drag extensions are not
+    // clamped: past the end they keep selecting through to the very end,
+    // including any trailing whitespace.
+    if (to == null &&
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        fromPosition.offset >= plainText.length &&
+        plainText.isNotEmpty) {
+      fromPosition = TextPosition(offset: plainText.length - 1);
+    }
     final TextSelection fromWord = getWordAtOffset(fromPosition);
     final TextPosition toPosition = to == null
         ? fromPosition

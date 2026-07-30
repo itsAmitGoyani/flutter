@@ -364,12 +364,14 @@ class TextSelectionOverlay {
       onStartHandleDragStart: _handleSelectionStartHandleDragStart,
       onStartHandleDragUpdate: _handleSelectionStartHandleDragUpdate,
       onEndHandleDragEnd: _handleAnyDragEnd,
+      onStartHandleCleanTapped: _handleStartHandleCleanTapped,
       endHandleType: TextSelectionHandleType.collapsed,
       endHandlesVisible: _effectiveEndHandleVisibility,
       lineHeightAtEnd: 0.0,
       onEndHandleDragStart: _handleSelectionEndHandleDragStart,
       onEndHandleDragUpdate: _handleSelectionEndHandleDragUpdate,
       onStartHandleDragEnd: _handleAnyDragEnd,
+      onEndHandleCleanTapped: _handleEndHandleCleanTapped,
       toolbarVisible: _effectiveToolbarVisibility,
       selectionEndpoints: const <TextSelectionPoint>[],
       selectionControls: selectionControls,
@@ -993,6 +995,65 @@ class TextSelectionOverlay {
     _handleSelectionHandleChanged(newSelection);
   }
 
+  // A clean tap on a selection handle's visual, forwarded here because the
+  // visual hit-tests opaquely and the editable underneath never saw the
+  // pointer (see _SelectionHandleOverlay).
+  //
+  // The tap is re-dispatched through the editable's own tap pipeline, anchored
+  // to the vertical center of the line the handle points to (the visuals hang
+  // above/below their line), so a single tap collapses the cursor at the
+  // endpoint, a double tap selects the word there, and an in-progress tap
+  // series — such as the third tap of a triple tap landing on a handle that
+  // the second tap mounted — continues natively.
+  void _handleStartHandleCleanTapped(PointerDeviceKind kind) =>
+      _handleHandleCleanTapped(atSelectionStart: true, kind: kind);
+
+  void _handleEndHandleCleanTapped(PointerDeviceKind kind) =>
+      _handleHandleCleanTapped(atSelectionStart: false, kind: kind);
+
+  void _handleHandleCleanTapped({required bool atSelectionStart, required PointerDeviceKind kind}) {
+    if (!context.mounted ||
+        !renderObject.attached ||
+        _selectionOverlay.selectionEndpoints.isEmpty ||
+        _selectionOverlay.isDraggingStartHandle ||
+        _selectionOverlay.isDraggingEndHandle) {
+      return;
+    }
+    // A handle whose endpoint is scrolled out of the editable's viewport is
+    // invisible but still hit-testable; acting on a tap there would change
+    // the selection from a spot the user cannot see.
+    final bool endpointIsInViewport = atSelectionStart
+        ? renderObject.selectionStartInViewport.value
+        : renderObject.selectionEndInViewport.value;
+    if (!endpointIsInViewport) {
+      return;
+    }
+    final TextSelectionPoint endpoint = atSelectionStart
+        ? _selectionOverlay.selectionEndpoints.first
+        : _selectionOverlay.selectionEndpoints.last;
+    final Offset anchor = renderObject.localToGlobal(
+      Offset(endpoint.point.dx, endpoint.point.dy - renderObject.preferredLineHeight / 2),
+    );
+    final _TextSelectionGestureDetectorState? detector = context
+        .findAncestorStateOfType<_TextSelectionGestureDetectorState>();
+    if (detector != null) {
+      detector._handleExternalTap(anchor, kind);
+      return;
+    }
+    // No TextSelectionGestureDetector above the editable: fall back to the
+    // dominant native behavior for a handle tap, collapsing at the endpoint.
+    if (_selection.isValid && !_selection.isCollapsed) {
+      selectionDelegate.userUpdateTextEditingValue(
+        _value.copyWith(
+          selection: TextSelection.collapsed(
+            offset: atSelectionStart ? _selection.start : _selection.end,
+          ),
+        ),
+        SelectionChangedCause.tap,
+      );
+    }
+  }
+
   void _handleAnyDragEnd(DragEndDetails details) {
     if (!context.mounted) {
       return;
@@ -1057,12 +1118,14 @@ class SelectionOverlay {
     this.onStartHandleDragStart,
     this.onStartHandleDragUpdate,
     this.onStartHandleDragEnd,
+    this.onStartHandleCleanTapped,
     required TextSelectionHandleType endHandleType,
     required double lineHeightAtEnd,
     this.endHandlesVisible,
     this.onEndHandleDragStart,
     this.onEndHandleDragUpdate,
     this.onEndHandleDragEnd,
+    this.onEndHandleCleanTapped,
     this.toolbarVisible,
     required List<TextSelectionPoint> selectionEndpoints,
     required this.selectionControls,
@@ -1303,6 +1366,13 @@ class SelectionOverlay {
   /// handles.
   final ValueChanged<DragEndDetails>? onStartHandleDragEnd;
 
+  /// Called when the user cleanly taps or clicks the start selection handle's
+  /// visual, which hit-tests opaquely, so the text underneath never sees the
+  /// pointer.
+  ///
+  /// Only used on iOS, where such a tap acts on the text at the endpoint.
+  final ValueChanged<PointerDeviceKind>? onStartHandleCleanTapped;
+
   void _handleStartHandleDragEnd(DragEndDetails details) {
     _isDraggingStartHandle = false;
     // Calling OverlayEntry.remove may not happen until the following frame, so
@@ -1423,6 +1493,13 @@ class SelectionOverlay {
   /// Called when the users lift their fingers after dragging the end selection
   /// handles.
   final ValueChanged<DragEndDetails>? onEndHandleDragEnd;
+
+  /// Called when the user cleanly taps or clicks the end selection handle's
+  /// visual, which hit-tests opaquely, so the text underneath never sees the
+  /// pointer.
+  ///
+  /// Only used on iOS, where such a tap acts on the text at the endpoint.
+  final ValueChanged<PointerDeviceKind>? onEndHandleCleanTapped;
 
   void _handleEndHandleDragEnd(DragEndDetails details) {
     _isDraggingEndHandle = false;
@@ -1768,6 +1845,7 @@ class SelectionOverlay {
         type: _startHandleType,
         handleLayerLink: startHandleLayerLink,
         onSelectionHandleTapped: onSelectionHandleTapped,
+        onSelectionHandleCleanTapped: onStartHandleCleanTapped,
         onSelectionHandleDragStart: _handleStartHandleDragStart,
         onSelectionHandleDragUpdate: _handleStartHandleDragUpdate,
         onSelectionHandleDragEnd: _handleStartHandleDragEnd,
@@ -1799,6 +1877,7 @@ class SelectionOverlay {
         type: _endHandleType,
         handleLayerLink: endHandleLayerLink,
         onSelectionHandleTapped: onSelectionHandleTapped,
+        onSelectionHandleCleanTapped: onEndHandleCleanTapped,
         onSelectionHandleDragStart: _handleEndHandleDragStart,
         onSelectionHandleDragUpdate: _handleEndHandleDragUpdate,
         onSelectionHandleDragEnd: _handleEndHandleDragEnd,
@@ -1979,6 +2058,7 @@ class _SelectionHandleOverlay extends StatefulWidget {
     required this.type,
     required this.handleLayerLink,
     this.onSelectionHandleTapped,
+    this.onSelectionHandleCleanTapped,
     this.onSelectionHandleDragStart,
     this.onSelectionHandleDragUpdate,
     this.onSelectionHandleDragEnd,
@@ -1990,6 +2070,7 @@ class _SelectionHandleOverlay extends StatefulWidget {
 
   final LayerLink handleLayerLink;
   final VoidCallback? onSelectionHandleTapped;
+  final ValueChanged<PointerDeviceKind>? onSelectionHandleCleanTapped;
   final ValueChanged<DragStartDetails>? onSelectionHandleDragStart;
   final ValueChanged<DragUpdateDetails>? onSelectionHandleDragUpdate;
   final ValueChanged<DragEndDetails>? onSelectionHandleDragEnd;
@@ -2047,9 +2128,88 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
 
   @override
   void dispose() {
+    _visualTapTimer?.cancel();
     widget.visibility?.removeListener(_handleVisibilityChanged);
     _controller.dispose();
     super.dispose();
+  }
+
+  // Whether clean taps on this handle are reported to
+  // [_SelectionHandleOverlay.onSelectionHandleCleanTapped].
+  //
+  // Touch-like pointers landing on the handle's opaque visual reach only the
+  // pan recognizer (alone in the arena there, it accepts them immediately),
+  // so a tap is observed as a zero-length drag and detected in the drag
+  // callbacks below. A press held past the long-press timeout, or moved past
+  // the touch slop, reads as a handle grab, not a tap. Mice and trackpads are
+  // ignored by the pan recognizer entirely, so their clean clicks are
+  // recognized by a dedicated [TapGestureRecognizer] instead.
+  bool get _forwardsCleanTaps =>
+      widget.onSelectionHandleCleanTapped != null && defaultTargetPlatform == TargetPlatform.iOS;
+
+  Timer? _visualTapTimer;
+  bool _visualTapIsClean = false;
+  Offset _visualTapDownGlobalPosition = Offset.zero;
+  PointerDeviceKind _visualTapKind = PointerDeviceKind.touch;
+
+  void _startVisualTapWindow(PointerDeviceKind kind) {
+    _visualTapIsClean = true;
+    _visualTapKind = kind;
+    _visualTapTimer?.cancel();
+    _visualTapTimer = Timer(kLongPressTimeout, () => _visualTapIsClean = false);
+  }
+
+  void _endVisualTapWindow() {
+    _visualTapTimer?.cancel();
+    if (_visualTapIsClean) {
+      _visualTapIsClean = false;
+      // Forwarded even when the handle is invisible (mouse-caused selections,
+      // for example, never show their handles): the handle's box still
+      // hit-tests opaquely over the endpoint, so without forwarding these
+      // pointers would simply be swallowed.
+      widget.onSelectionHandleCleanTapped!(_visualTapKind);
+    }
+  }
+
+  void _handleDragDown(DragDownDetails details) {
+    // Runs for every pointer that goes down on the handle, before the arena
+    // resolves, so it always records the true touch-down position.
+    _visualTapDownGlobalPosition = details.globalPosition;
+  }
+
+  void _handleDragStart(DragStartDetails details) {
+    _startVisualTapWindow(details.kind ?? PointerDeviceKind.touch);
+    // When the drag recognizer wins the arena only after the pointer has
+    // already moved (it competes with other recognizers in the handle's
+    // translucent padding), the movement so far is folded into the start
+    // details and no update callback follows: measure it here, or a fling
+    // through the handle would read as a clean tap.
+    if ((details.globalPosition - _visualTapDownGlobalPosition).distance > kTouchSlop) {
+      _visualTapIsClean = false;
+    }
+    widget.onSelectionHandleDragStart?.call(details);
+  }
+
+  void _handleDragUpdate(DragUpdateDetails details) {
+    if (_visualTapIsClean &&
+        (details.globalPosition - _visualTapDownGlobalPosition).distance > kTouchSlop) {
+      _visualTapIsClean = false;
+    }
+    widget.onSelectionHandleDragUpdate?.call(details);
+  }
+
+  void _handleDragEnd(DragEndDetails details) {
+    widget.onSelectionHandleDragEnd?.call(details);
+    _endVisualTapWindow();
+  }
+
+  void _handleVisualTapDown(TapDownDetails details) {
+    _visualTapDownGlobalPosition = details.globalPosition;
+    _startVisualTapWindow(details.kind ?? PointerDeviceKind.mouse);
+  }
+
+  void _handleVisualTapUp(TapUpDetails details) {
+    _endVisualTapWindow();
   }
 
   @override
@@ -2078,6 +2238,50 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
     final bool eagerlyAcceptDragWhenCollapsed =
         widget.type == TextSelectionHandleType.collapsed &&
         defaultTargetPlatform == TargetPlatform.iOS;
+
+    Widget handle = widget.selectionControls.buildHandle(
+      context,
+      widget.type,
+      widget.preferredLineHeight,
+      widget.onSelectionHandleTapped,
+    );
+
+    // On iOS, the handle visual hit-tests opaquely across its whole box, so the
+    // editable underneath never sees a pointer that lands on it, and the pan
+    // recognizer above only accepts touch-like devices: mouse and trackpad
+    // clicks there simply die. Recognize them here, scoped to the visual only —
+    // the translucent padding around it already lets the editable win its
+    // clicks — and report them so they can be re-dispatched as text taps.
+    // Touch-like devices are deliberately excluded: for them the pan must stay
+    // alone in the arena so it keeps accepting the pointer the moment it goes
+    // down (see _forwardsCleanTaps); their clean taps are detected as
+    // zero-length drags instead. The collapsed handle's visual is
+    // hit-transparent, so this detector is inert for it; it is still mounted
+    // for every type so that a recognizer tracking a click survives the handle
+    // changing type mid-gesture (e.g. a second click landing on a
+    // not-yet-rebuilt handle right after the first collapsed the selection).
+    if (_forwardsCleanTaps) {
+      handle = RawGestureDetector(
+        excludeFromSemantics: true,
+        gestures: <Type, GestureRecognizerFactory>{
+          TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+            () => TapGestureRecognizer(
+              debugOwner: this,
+              supportedDevices: <PointerDeviceKind>{
+                PointerDeviceKind.mouse,
+                PointerDeviceKind.trackpad,
+              },
+            ),
+            (TapGestureRecognizer instance) {
+              instance
+                ..onTapDown = _handleVisualTapDown
+                ..onTapUp = _handleVisualTapUp;
+            },
+          ),
+        },
+        child: handle,
+      );
+    }
 
     return CompositedTransformFollower(
       link: widget.handleLayerLink,
@@ -2110,9 +2314,16 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
                       ..gestureSettings = eagerlyAcceptDragWhenCollapsed
                           ? const DeviceGestureSettings(touchSlop: 1.0)
                           : null
-                      ..onStart = widget.onSelectionHandleDragStart
-                      ..onUpdate = widget.onSelectionHandleDragUpdate
-                      ..onEnd = widget.onSelectionHandleDragEnd;
+                      ..onDown = _forwardsCleanTaps ? _handleDragDown : null
+                      ..onStart = _forwardsCleanTaps
+                          ? _handleDragStart
+                          : widget.onSelectionHandleDragStart
+                      ..onUpdate = _forwardsCleanTaps
+                          ? _handleDragUpdate
+                          : widget.onSelectionHandleDragUpdate
+                      ..onEnd = _forwardsCleanTaps
+                          ? _handleDragEnd
+                          : widget.onSelectionHandleDragEnd;
                   },
                 ),
               },
@@ -2123,12 +2334,7 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
                   right: padding.right,
                   bottom: padding.bottom,
                 ),
-                child: widget.selectionControls.buildHandle(
-                  context,
-                  widget.type,
-                  widget.preferredLineHeight,
-                  widget.onSelectionHandleTapped,
-                ),
+                child: handle,
               ),
             ),
           ),
@@ -3578,6 +3784,12 @@ class _TextSelectionGestureDetectorState extends State<TextSelectionGestureDetec
     }
   }
 
+  @override
+  void dispose() {
+    _tapSeriesTimer?.cancel();
+    super.dispose();
+  }
+
   void _handleTapTrackStart() {
     widget.onTapTrackStart?.call();
   }
@@ -3586,9 +3798,101 @@ class _TextSelectionGestureDetectorState extends State<TextSelectionGestureDetec
     widget.onTapTrackReset?.call();
   }
 
+  // ---- Selection-handle tap bridge ----
+  //
+  // Taps on a selection handle's visual never reach this detector's
+  // recognizer: the visual hit-tests opaquely, so the recognizer neither sees
+  // nor counts them. The handle overlay recognizes those taps itself and
+  // forwards them to _handleExternalTap, which stitches them into the active
+  // tap series so that consecutive taps can span the text and the handles
+  // (e.g. the third tap of a triple tap landing on a handle that the second
+  // tap mounted). Counts are only ever promoted for a series that involves a
+  // forwarded tap; series tracked purely by the recognizer always use the
+  // recognizer's own counts.
+  Timer? _tapSeriesTimer;
+  Offset? _tapSeriesLastGlobalPosition;
+  int _tapSeriesLastCount = 0;
+  bool _tapSeriesHasExternalTap = false;
+
+  // The promoted count decided at tap down, so that the matching tap up
+  // dispatches consistently.
+  int? _promotedTapCount;
+
+  bool _isContinuationOfTapSeries(Offset globalPosition) {
+    return _tapSeriesTimer != null &&
+        _tapSeriesLastGlobalPosition != null &&
+        (globalPosition - _tapSeriesLastGlobalPosition!).distance <= kDoubleTapSlop;
+  }
+
+  void _recordTapForSeries(Offset globalPosition, int count) {
+    _tapSeriesLastGlobalPosition = globalPosition;
+    _tapSeriesLastCount = count;
+  }
+
+  // Mirrors the recognizer's tap tracker, which measures the consecutive-tap
+  // window from a tap up to the next tap down.
+  void _restartTapSeriesWindow() {
+    _tapSeriesTimer?.cancel();
+    _tapSeriesTimer = Timer(kDoubleTapTimeout, _expireTapSeries);
+  }
+
+  void _expireTapSeries() {
+    _tapSeriesTimer?.cancel();
+    _tapSeriesTimer = null;
+    _tapSeriesLastGlobalPosition = null;
+    _tapSeriesLastCount = 0;
+    _tapSeriesHasExternalTap = false;
+  }
+
+  // Dispatches a tap recognized by a selection-handle overlay through the
+  // normal tap pipeline, continuing the active tap series. The position is
+  // expected to already be anchored to the text line the handle points to.
+  void _handleExternalTap(Offset globalPosition, PointerDeviceKind kind) {
+    final int count = _isContinuationOfTapSeries(globalPosition) ? _tapSeriesLastCount + 1 : 1;
+    final box = context.findRenderObject() as RenderBox?;
+    final Offset localPosition = box == null ? globalPosition : box.globalToLocal(globalPosition);
+    _tapSeriesHasExternalTap = true;
+    _recordTapForSeries(globalPosition, count);
+    _restartTapSeriesWindow();
+    _dispatchTapDown(
+      TapDragDownDetails(
+        globalPosition: globalPosition,
+        localPosition: localPosition,
+        kind: kind,
+        consecutiveTapCount: count,
+      ),
+    );
+    _dispatchTapUp(
+      TapDragUpDetails(
+        globalPosition: globalPosition,
+        localPosition: localPosition,
+        kind: kind,
+        consecutiveTapCount: count,
+      ),
+    );
+  }
+
   // The down handler is force-run on success of a single tap and optimistically
   // run before a long press success.
   void _handleTapDown(TapDragDownDetails details) {
+    final bool promote =
+        _tapSeriesHasExternalTap && _isContinuationOfTapSeries(details.globalPosition);
+    final int count = promote ? _tapSeriesLastCount + 1 : details.consecutiveTapCount;
+    _promotedTapCount = count;
+    _recordTapForSeries(details.globalPosition, count);
+    _dispatchTapDown(
+      count == details.consecutiveTapCount
+          ? details
+          : TapDragDownDetails(
+              globalPosition: details.globalPosition,
+              localPosition: details.localPosition,
+              kind: details.kind,
+              consecutiveTapCount: count,
+            ),
+    );
+  }
+
+  void _dispatchTapDown(TapDragDownDetails details) {
     widget.onTapDown?.call(details);
     // This isn't detected as a double tap gesture in the gesture recognizer
     // because it's 2 single taps, each of which may do different things depending
@@ -3604,6 +3908,22 @@ class _TextSelectionGestureDetectorState extends State<TextSelectionGestureDetec
   }
 
   void _handleTapUp(TapDragUpDetails details) {
+    final int count = _promotedTapCount ?? details.consecutiveTapCount;
+    _promotedTapCount = null;
+    _restartTapSeriesWindow();
+    _dispatchTapUp(
+      count == details.consecutiveTapCount
+          ? details
+          : TapDragUpDetails(
+              globalPosition: details.globalPosition,
+              localPosition: details.localPosition,
+              kind: details.kind,
+              consecutiveTapCount: count,
+            ),
+    );
+  }
+
+  void _dispatchTapUp(TapDragUpDetails details) {
     if (_getEffectiveConsecutiveTapCount(details.consecutiveTapCount) == 1) {
       widget.onSingleTapUp?.call(details);
       widget.onUserTap?.call();
@@ -3613,10 +3933,16 @@ class _TextSelectionGestureDetectorState extends State<TextSelectionGestureDetec
   }
 
   void _handleTapCancel() {
+    _promotedTapCount = null;
+    _expireTapSeries();
     widget.onSingleTapCancel?.call();
   }
 
   void _handleDragStart(TapDragStartDetails details) {
+    // A tap that turned into a drag breaks the tap series, mirroring the
+    // recognizer's tracker, which resets on movement past the slop tolerance.
+    _promotedTapCount = null;
+    _expireTapSeries();
     widget.onDragSelectionStart?.call(details);
   }
 

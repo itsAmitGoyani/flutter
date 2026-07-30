@@ -1242,11 +1242,18 @@ void main() {
 
       await tester.pumpAndSettle();
 
+      // The outer, translucent detector carries the pan recognizer and spans
+      // the handle's whole interactive area; the inner detector (clean-tap
+      // forwarding, mouse only) is contained within it, so checking the outer
+      // one bounds them both.
       final Finder gestureDetector = find.descendant(
         of: find.byType(CompositedTransformFollower),
         matching: find.descendant(
           of: find.byType(FadeTransition),
-          matching: find.byType(RawGestureDetector),
+          matching: find.byWidgetPredicate(
+            (Widget widget) =>
+                widget is RawGestureDetector && widget.behavior == HitTestBehavior.translucent,
+          ),
         ),
       );
 

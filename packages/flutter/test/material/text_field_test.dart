@@ -10880,8 +10880,15 @@ void main() {
         await gesture.up();
         await tester.pump();
 
-        expect(controller.selection.baseOffset, 74);
-        expect(controller.selection.extentOffset, 74);
+        if (defaultTargetPlatform == TargetPlatform.iOS) {
+          // On iOS, a double click just past the end of the text selects the
+          // last word, matching the native behavior.
+          expect(controller.selection.baseOffset, 73);
+          expect(controller.selection.extentOffset, 74);
+        } else {
+          expect(controller.selection.baseOffset, 74);
+          expect(controller.selection.extentOffset, 74);
+        }
 
         // Here we click on same position again, to register a triple click. This will select
         // the paragraph at the clicked position.
