@@ -48,6 +48,15 @@ export 'package:flutter/services.dart' show TextSelectionDelegate;
 ///     for a Cupertino-style toolbar.
 typedef ToolbarBuilder = Widget Function(BuildContext context, Widget child);
 
+/// Signature for a callback that reports a clean tap or click on the visual
+/// of a selection handle.
+///
+/// [afterDragStart] is true when the handle's drag recognizer had already
+/// started a drag for the same pointer, so the effects of a drag start, such as
+/// the magnifier that hides the toolbar, have run before the tap is reported.
+typedef SelectionHandleCleanTapCallback =
+    void Function(PointerDeviceKind kind, {required bool afterDragStart});
+
 /// ParentData that determines whether or not to paint the corresponding child.
 ///
 /// Used in the layout of the Cupertino and Material text selection menus, which
@@ -717,6 +726,7 @@ class TextSelectionOverlay {
     }
 
     _endHandleDragPosition = details.globalPosition.dy;
+    _toolbarWasVisibleAtHandleDragStart = _selectionOverlay.toolbarIsVisible;
 
     // Use local coordinates when dealing with line height. because in case of a
     // scale transformation, the line height will also be scaled.
@@ -876,6 +886,7 @@ class TextSelectionOverlay {
     }
 
     _startHandleDragPosition = details.globalPosition.dy;
+    _toolbarWasVisibleAtHandleDragStart = _selectionOverlay.toolbarIsVisible;
 
     // Use local coordinates when dealing with line height. because in case of a
     // scale transformation, the line height will also be scaled.
@@ -1005,13 +1016,23 @@ class TextSelectionOverlay {
   // endpoint, a double tap selects the word there, and an in-progress tap
   // series — such as the third tap of a triple tap landing on a handle that
   // the second tap mounted — continues natively.
-  void _handleStartHandleCleanTapped(PointerDeviceKind kind) =>
-      _handleHandleCleanTapped(atSelectionStart: true, kind: kind);
+  void _handleStartHandleCleanTapped(PointerDeviceKind kind, {required bool afterDragStart}) =>
+      _handleHandleCleanTapped(atSelectionStart: true, kind: kind, afterDragStart: afterDragStart);
 
-  void _handleEndHandleCleanTapped(PointerDeviceKind kind) =>
-      _handleHandleCleanTapped(atSelectionStart: false, kind: kind);
+  void _handleEndHandleCleanTapped(PointerDeviceKind kind, {required bool afterDragStart}) =>
+      _handleHandleCleanTapped(atSelectionStart: false, kind: kind, afterDragStart: afterDragStart);
 
-  void _handleHandleCleanTapped({required bool atSelectionStart, required PointerDeviceKind kind}) {
+  // Whether the toolbar was visible when the current handle drag began. The
+  // magnifier shown at a drag start hides the toolbar, so a drag that ends as
+  // a clean tap has already toggled the toolbar off. Overwritten by every drag
+  // start and read only for a tap that followed one.
+  bool _toolbarWasVisibleAtHandleDragStart = false;
+
+  void _handleHandleCleanTapped({
+    required bool atSelectionStart,
+    required PointerDeviceKind kind,
+    required bool afterDragStart,
+  }) {
     if (!context.mounted ||
         !renderObject.attached ||
         _selectionOverlay.selectionEndpoints.isEmpty ||
@@ -1026,6 +1047,14 @@ class TextSelectionOverlay {
         ? renderObject.selectionStartInViewport.value
         : renderObject.selectionEndInViewport.value;
     if (!endpointIsInViewport) {
+      return;
+    }
+    // A gesture that began as a handle drag has already toggled the toolbar
+    // off: the magnifier shown at the drag start hides it (see
+    // [SelectionOverlay.showMagnifier]). On a collapsed selection the forwarded
+    // single tap would only toggle it back on, so the tap ends here, as it does
+    // in a native field.
+    if (afterDragStart && _selection.isCollapsed && _toolbarWasVisibleAtHandleDragStart) {
       return;
     }
     final TextSelectionPoint endpoint = atSelectionStart
@@ -1371,7 +1400,7 @@ class SelectionOverlay {
   /// pointer.
   ///
   /// Only used on iOS, where such a tap acts on the text at the endpoint.
-  final ValueChanged<PointerDeviceKind>? onStartHandleCleanTapped;
+  final SelectionHandleCleanTapCallback? onStartHandleCleanTapped;
 
   void _handleStartHandleDragEnd(DragEndDetails details) {
     _isDraggingStartHandle = false;
@@ -1499,7 +1528,7 @@ class SelectionOverlay {
   /// pointer.
   ///
   /// Only used on iOS, where such a tap acts on the text at the endpoint.
-  final ValueChanged<PointerDeviceKind>? onEndHandleCleanTapped;
+  final SelectionHandleCleanTapCallback? onEndHandleCleanTapped;
 
   void _handleEndHandleDragEnd(DragEndDetails details) {
     _isDraggingEndHandle = false;
@@ -2070,7 +2099,7 @@ class _SelectionHandleOverlay extends StatefulWidget {
 
   final LayerLink handleLayerLink;
   final VoidCallback? onSelectionHandleTapped;
-  final ValueChanged<PointerDeviceKind>? onSelectionHandleCleanTapped;
+  final SelectionHandleCleanTapCallback? onSelectionHandleCleanTapped;
   final ValueChanged<DragStartDetails>? onSelectionHandleDragStart;
   final ValueChanged<DragUpdateDetails>? onSelectionHandleDragUpdate;
   final ValueChanged<DragEndDetails>? onSelectionHandleDragEnd;
@@ -2151,10 +2180,14 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
   bool _visualTapIsClean = false;
   Offset _visualTapDownGlobalPosition = Offset.zero;
   PointerDeviceKind _visualTapKind = PointerDeviceKind.touch;
+  // Whether the pan recognizer started a drag for the pointer of the current
+  // tap window, so the drag-start effects ran before the tap is reported.
+  bool _visualTapAfterDragStart = false;
 
-  void _startVisualTapWindow(PointerDeviceKind kind) {
+  void _startVisualTapWindow(PointerDeviceKind kind, {required bool afterDragStart}) {
     _visualTapIsClean = true;
     _visualTapKind = kind;
+    _visualTapAfterDragStart = afterDragStart;
     _visualTapTimer?.cancel();
     _visualTapTimer = Timer(kLongPressTimeout, () => _visualTapIsClean = false);
   }
@@ -2167,7 +2200,10 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
       // for example, never show their handles): the handle's box still
       // hit-tests opaquely over the endpoint, so without forwarding these
       // pointers would simply be swallowed.
-      widget.onSelectionHandleCleanTapped!(_visualTapKind);
+      widget.onSelectionHandleCleanTapped!(
+        _visualTapKind,
+        afterDragStart: _visualTapAfterDragStart,
+      );
     }
   }
 
@@ -2178,7 +2214,7 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
   }
 
   void _handleDragStart(DragStartDetails details) {
-    _startVisualTapWindow(details.kind ?? PointerDeviceKind.touch);
+    _startVisualTapWindow(details.kind ?? PointerDeviceKind.touch, afterDragStart: true);
     // When the drag recognizer wins the arena only after the pointer has
     // already moved (it competes with other recognizers in the handle's
     // translucent padding), the movement so far is folded into the start
@@ -2205,7 +2241,7 @@ class _SelectionHandleOverlayState extends State<_SelectionHandleOverlay>
 
   void _handleVisualTapDown(TapDownDetails details) {
     _visualTapDownGlobalPosition = details.globalPosition;
-    _startVisualTapWindow(details.kind ?? PointerDeviceKind.mouse);
+    _startVisualTapWindow(details.kind ?? PointerDeviceKind.mouse, afterDragStart: false);
   }
 
   void _handleVisualTapUp(TapUpDetails details) {

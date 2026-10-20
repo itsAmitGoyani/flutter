@@ -3446,6 +3446,7 @@ class EditableTextState extends State<EditableText>
     widget.controller.removeListener(_didChangeTextEditingValue);
     _floatingCursorResetController?.dispose();
     _floatingCursorResetController = null;
+    _systemHideTimer?.cancel();
     _closeInputConnectionIfNeeded();
     assert(!_hasInputConnection);
     _cursorTimer?.cancel();
@@ -5026,6 +5027,9 @@ class EditableTextState extends State<EditableText>
 
   @override
   void hideToolbar([bool hideHandles = true]) {
+    // A hide from this side ends the mark of a system hide that waits for its
+    // tap; see [didSystemHideContextMenu].
+    _clearSystemHide();
     // Stop listening to parent scroll events when toolbar is hidden.
     _disposeScrollNotificationObserver();
     if (hideHandles) {
@@ -5037,10 +5041,64 @@ class EditableTextState extends State<EditableText>
     }
   }
 
+  // Whether the platform hid the system context menu of this field within the
+  // last [kLongPressTimeout], the longest duration of a tap, with no tap and
+  // no hide of this field since. Set by [didSystemHideContextMenu]; cleared by
+  // its timer, by the next [toggleToolbar] and by every [hideToolbar] call, so
+  // a system hide that no caret tap caused, such as the hide for a tap on a
+  // menu item, does not reach the next tap.
+  bool _systemHidToolbarForNextTap = false;
+  Timer? _systemHideTimer;
+
+  void _clearSystemHide() {
+    _systemHidToolbarForNextTap = false;
+    _systemHideTimer?.cancel();
+    _systemHideTimer = null;
+  }
+
+  /// Called when the platform hides the system context menu of this field.
+  ///
+  /// UIKit hides the menu as soon as a touch begins outside of it. Measured on
+  /// iOS 26, the dismiss message reaches the framework within about 15 ms of
+  /// the pointer down of that touch, sometimes just before it, and always
+  /// before the tap up. A tap-driven [toggleToolbar] would then read the
+  /// toolbar as hidden and show the menu again for the same tap. To toggle
+  /// like a native field, [toggleToolbar] treats a hide within
+  /// [kLongPressTimeout] as "the toolbar was visible when this tap began": a
+  /// longer press is claimed by the long-press gesture and never reaches a
+  /// toggle, so the window covers at most one tap. A [hideToolbar] call from
+  /// the framework side, such as a tap that moves the caret, a paste or a
+  /// focus loss, ends the window early, so a system hide that no caret tap
+  /// caused does not reach the next tap.
+  ///
+  /// Does nothing after this state is disposed: the [SystemContextMenu] that
+  /// reports the hide can outlive the field by one frame.
+  ///
+  /// See also:
+  ///
+  ///  * [SystemContextMenu.editableText], which calls this method when the
+  ///    platform hides the menu it shows for this field.
+  void didSystemHideContextMenu() {
+    if (!mounted) {
+      return;
+    }
+    // Hide first: hideToolbar clears any earlier mark, and the mark set below
+    // belongs to this hide.
+    hideToolbar(false);
+    _systemHidToolbarForNextTap = true;
+    _systemHideTimer?.cancel();
+    _systemHideTimer = Timer(kLongPressTimeout, () => _systemHidToolbarForNextTap = false);
+  }
+
   /// Toggles the visibility of the toolbar.
+  ///
+  /// A toolbar that the platform hid for the tap that toggles it counts as
+  /// visible, so that tap closes it once; see [didSystemHideContextMenu].
   void toggleToolbar([bool hideHandles = true]) {
     final TextSelectionOverlay selectionOverlay = _selectionOverlay ??= _createSelectionOverlay();
-    if (selectionOverlay.toolbarIsVisible) {
+    final bool systemHidToolbarForThisTap = _systemHidToolbarForNextTap;
+    _clearSystemHide();
+    if (selectionOverlay.toolbarIsVisible || systemHidToolbarForThisTap) {
       hideToolbar(hideHandles);
     } else {
       showToolbar();
